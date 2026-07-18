@@ -1,0 +1,133 @@
+import gradio as gr
+import chromadb
+from docx import Document
+
+from llama_index.core import (
+    VectorStoreIndex,
+    StorageContext,
+    Document as LlamaDocument,
+    Settings
+)
+
+from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.llms.huggingface import HuggingFaceLLM
+from llama_index.core.node_parser import SentenceSplitter
+
+
+Settings.embed_model = HuggingFaceEmbedding(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
+
+Settings.llm = HuggingFaceLLM(
+    model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    tokenizer_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+)
+
+Settings.text_splitter = SentenceSplitter(
+    chunk_size=200,
+    chunk_overlap=50
+)
+
+
+def load_medical_doc(file):
+
+    if file.name.endswith(".docx"):
+
+        doc = Document(file.name)
+
+        text = "\n".join(
+            [para.text for para in doc.paragraphs]
+        )
+
+    elif file.name.endswith(".pdf"):
+
+        from pypdf import PdfReader
+
+        reader = PdfReader(file.name)
+
+        text = ""
+
+        for page in reader.pages:
+            text += page.extract_text()
+
+    else:
+        return "Upload PDF or DOCX"
+
+    documents = [
+        LlamaDocument(text=text)
+    ]
+
+    client = chromadb.PersistentClient(
+        path="./medical_db"
+    )
+
+    collection = client.get_or_create_collection(
+        name="medical_docs"
+    )
+
+    vector_store = ChromaVectorStore(
+        chroma_collection=collection
+    )
+
+    storage_context = StorageContext.from_defaults(
+        vector_store=vector_store
+    )
+
+    index = VectorStoreIndex.from_documents(
+        documents,
+        storage_context=storage_context
+    )
+
+    global query_engine
+    query_engine = index.as_query_engine(
+        similarity_top_k=3
+    )
+
+    return "Medical document uploaded successfully."
+
+
+def medical_chat(question):
+
+    response = query_engine.query(question)
+
+    return str(response)
+
+
+with gr.Blocks() as demo:
+
+    gr.Markdown("# Medical NLP Chatbot")
+
+    file_input = gr.File(
+        label="Upload Medical PDF or DOCX"
+    )
+
+    upload_btn = gr.Button("Process Document")
+
+    status = gr.Textbox(
+        label="Status"
+    )
+
+    upload_btn.click(
+        load_medical_doc,
+        inputs=file_input,
+        outputs=status
+    )
+
+    question = gr.Textbox(
+        label="Ask Medical Question"
+    )
+
+    answer = gr.Textbox(
+        label="Answer"
+    )
+
+    ask_btn = gr.Button("Ask")
+
+    ask_btn.click(
+        medical_chat,
+        inputs=question,
+        outputs=answer
+    )
+
+demo.launch()
